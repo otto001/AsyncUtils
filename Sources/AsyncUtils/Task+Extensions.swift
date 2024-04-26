@@ -16,7 +16,7 @@
 
 import Foundation
 
-extension Task where Failure == Never, Success == Never {
+public extension Task where Failure == Never, Success == Never {
     /// Suspends the current task for the given amount of time.
     /// - Parameters: nanoseconds: The number of nanoseconds to wait.
     /// - Throws: For example, if the task is cancelled.
@@ -25,7 +25,7 @@ extension Task where Failure == Never, Success == Never {
     }
 }
 
-extension Task where Failure == Error {
+public extension Task where Failure == Error {
     
     /// Creates a new task that will start executing the given operation after the given delay.
     /// - Parameters: delayInterval: The time interval to wait before starting the operation.
@@ -45,7 +45,7 @@ extension Task where Failure == Error {
 }
 
 
-extension Task where Failure == Error {
+public extension Task where Failure == Error {
 
     /// Dispatches the given closure on the given DispatchQueue and returns the result.
     /// - Parameters: queue: The DispatchQueue to dispatch the closure on.
