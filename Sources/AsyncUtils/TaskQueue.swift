@@ -19,19 +19,37 @@ import DequeModule
 
 /// A task queue that can be used to run tasks concurrently with a maximum number of tasks running at the same time. Task are executed in the order they are added to the queue. Task can be provided with an ID to prevent duplicate tasks from being added to the queue.
 public actor TaskQueue<TaskID: Hashable> {
+    
+    /// This class wraps a continuation in order to allow the continuation to have an identity. This is necessary to remove the continuation from the task when the task is canceled.
+    fileprivate class WrappedContinuation {
+        /// The continuation that is wrapped.
+        var continuation: CheckedContinuation<Void, Error>?
+
+        /// Initializes a new wrapped continuation.
+        /// - Parameters: continuation: The continuation that is wrapped.
+        init(continuation: CheckedContinuation<Void, Error>? = nil) {
+            self.continuation = continuation
+        }
+    }
   
     /// A task that can be added to the queue. The task can be provided with an ID to prevent duplicate tasks from being added to the queue.
     public class QueueableTask: Identifiable, Hashable, Equatable {
         /// The ID of the task. Used to prevent duplicate tasks from being added to the queue.
         public let taskID: TaskID?
         /// The closure that contains the work that the task should perform.
-        public let closure: @Sendable () async -> Void
+        /// - Note: Never set this variable on any QueueableTask instance that was not guaranteed to be isolated to the actor (e.g., may have been created outside of the actor).
+        public fileprivate(set) var closure: @Sendable () async -> Void
         
         /// The priority of the task. If nil, the default priority of the task queue is used.
         public let taskPriority: TaskPriority?
         
         /// If this task is waited on by an `addAndWait` call, this array will contain the continuations that should be resumed when the task is finished.
-        fileprivate var continuations: [CheckedContinuation<Void, Never>] = []
+        /// - Note: Should only ever be accessed within actor isolation of the `TaskQueue`.
+        fileprivate var continuations: [WrappedContinuation] = []
+        
+        /// A closure that needs to be called when the task is canceled. This is used to resume a continuation created by an `addAndWait` call  with a CancellationError. 
+        /// - Note: Should only ever be accessed within actor isolation of the `TaskQueue`.
+        fileprivate var continationCancellation: (@Sendable () -> Void)? = nil
 
         /// Initializes a new queueable task.
         /// - Parameters: taskID: The ID of the task. Used to prevent duplicate tasks from being added to the queue. If no ID is provided, no duplicate check is performed.
@@ -119,10 +137,11 @@ public actor TaskQueue<TaskID: Hashable> {
         self.defaultTaskPriority = defaultTaskPriority
     }
     
-    /// Called when a task is finished. Removes the task from the running tasks and the task ID map. Starts the next tasks.
+    /// Called when a task is finished. Resumes any continuations that are waiting for the task to finish. Removes the task from the running tasks and the task ID map. Starts the next tasks.
+    /// - Parameters: queueableTask: The task that is finished.
     private func completedTask(_ queueableTask: QueueableTask) {
         for continuation in queueableTask.continuations {
-            continuation.resume()
+            continuation.continuation?.resume()
         }
         
         self.runningTasks.removeValue(forKey: queueableTask.id)
@@ -191,17 +210,46 @@ public actor TaskQueue<TaskID: Hashable> {
         self.add(queueableTask)
     }
 
+    /// Cancels a task. If the task is currently running, the running task is canceled. If the task is queued, the task is removed from the queue and its continuationCanceled closure is called. If a wrapped continuation is provided, the continuation is resumed with a CancellationError and removed from the task. Should the task have no continuations left, the task is removed from the queue or the running tasks.
+    /// - Parameters: queueableTask: The task that is canceled.
+    /// - Parameters: wrappedContinuation: The wrapped continuation that should be removed from the task.
+    private func cancel(for queueableTask: QueueableTask, with wrappedContinuation: WrappedContinuation? = nil) {
+        if let wrappedContinuation {
+            queueableTask.continuations.removeAll { $0 === wrappedContinuation }
+            wrappedContinuation.continuation?.resume(throwing: CancellationError())
+        }
+        
+        guard queueableTask.continuations.isEmpty else { return }
+        
+        if let index = self.queue.firstIndex(of: queueableTask) {
+            self.queue.remove(at: index)
+            queueableTask.continationCancellation?()
+        } else if let runningTask = self.runningTasks[queueableTask.id] {
+            runningTask.cancel()
+        }
+    }
 
     /// Adds a task to the queue and waits for it to finish. 
     /// If an ID is provided and a task with the same ID is already running, the function waits for the task already existing task to finish and will not start a new task.
     /// If the task cannot be started directly due to the maximum number of concurrent tasks, the function waits until the task is started and finished.
     /// - Parameters: id: The ID of the task. Used to prevent duplicate tasks from being added to the queue. If no ID is provided, no duplicate check is performed.
     /// - Parameters: closure: The closure that contains the work that the task should perform.
+    /// - Throws: A CancellationError if the task is canceled.
     /// - Note: `addAndWait` can only be used in conjuction with an id for tasks that do no return a value or throw an error. Tasks that return a value or throw an error can be used with the other `addAndWait` functions, however, no ID can be provided for these tasks.
-    public func addAndWait(with id: TaskID? = nil, _ closure: @Sendable @escaping () async -> Void) async {
-        return await withCheckedContinuation { continuation in
-            let queueableTask = self.addOrGet(QueueableTask(taskID: id, closure: closure))
-            queueableTask.continuations.append(continuation)
+    /// - Note: The function is cancellable. If all tasks waiting for the queued task with the provided ID are canceled, the queued task is canceled as well.
+    public func addAndWait(with id: TaskID, _ closure: @Sendable @escaping () async -> Void) async throws {
+        let queueableTask = self.addOrGet(QueueableTask(taskID: id, closure: closure))
+        let wrappedContinuation = WrappedContinuation()
+        queueableTask.continuations.append(wrappedContinuation)
+        
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                wrappedContinuation.continuation = continuation
+            }
+        } onCancel: {
+            Task {
+                await self.cancel(for: queueableTask, with: wrappedContinuation)
+            }
         }
     }
     
@@ -209,33 +257,58 @@ public actor TaskQueue<TaskID: Hashable> {
     /// Adds a task to the queue and waits for it to finish. No task ID can be provided. If the task cannot be started directly due to the maximum number of concurrent tasks, the function waits until the task is started and finished.
     /// - Parameters: closure: The closure that contains the work that the task should perform.
     /// - Returns: The result of the task.
+    /// - Throws: A CancellationError if the task is canceled.
     /// - Note: No ID can be provided for tasks that return a value. Therefore, no duplicate check is performed.
-    public func addAndWait<T>(_ closure: @Sendable @escaping () async -> T) async -> T {
-        await withCheckedContinuation { continuation in
-            let queueableTask = QueueableTask(taskID: nil) {
-                let result = await closure()
-                continuation.resume(returning: result)
+    public func addAndWait<T>(_ closure: @Sendable @escaping () async -> T) async throws -> T {
+        let queueableTask = QueueableTask(taskID: nil) {}
+        
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queueableTask.continationCancellation = {
+                    continuation.resume(throwing: CancellationError())
+                }
+                queueableTask.closure = {
+                    let result = await closure()
+                    continuation.resume(returning: result)
+                }
+                self.add(queueableTask)
+                
             }
-            self.add(queueableTask)
+        } onCancel: {
+            Task {
+                await self.cancel(for: queueableTask)
+            }
         }
     }
     
     /// Adds a task to the queue and waits for it to finish. No task ID can be provided. If the task cannot be started directly due to the maximum number of concurrent tasks, the function waits until the task is started and finished.
     /// - Parameters: closure: The closure that contains the work that the task should perform.
     /// - Returns: The result of the task.
-    /// - Throws: The error that the task throws.
+    /// - Throws: The error that the task throws or a CancellationError if the task is canceled.
     /// - Note: No ID can be provided for tasks that return a value or throw an error. Therefore, no duplicate check is performed.
     public func addAndWait<T>(_ closure: @Sendable @escaping () async throws -> T) async throws -> T {
-        try await withCheckedThrowingContinuation { continuation in
-            let queueableTask = QueueableTask(taskID: nil) {
-                do {
-                    let result = try await closure()
-                    continuation.resume(returning: result)
-                } catch {
-                    continuation.resume(throwing: error)
+        let queueableTask = QueueableTask(taskID: nil) {}
+        
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                
+                queueableTask.continationCancellation = {
+                    continuation.resume(throwing: CancellationError())
                 }
+                queueableTask.closure = {
+                    do {
+                        let result = try await closure()
+                        continuation.resume(returning: result)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+                self.add(queueableTask)
             }
-            self.add(queueableTask)
+        } onCancel: {
+            Task {
+                await self.cancel(for: queueableTask)
+            }
         }
     }
     
@@ -250,12 +323,14 @@ public actor TaskQueue<TaskID: Hashable> {
     }
     
     /// Waits for all tasks that are currently queued or running to finish.
-    public func waitForAll() async {
+    /// - Throws: A CancellationError if the task is canceled.
+    public func waitForAll() async throws {
         // Store all tasks that we want to wait for
         let tasksAhead = self.allTaskIds()
         
         // Wait until a task slot opens (i.e. all tasks ahead are either running or completed)
-        await self.addAndWait {}
+        try await self.addAndWait {}
+        
         
         // If the following line is executed, all tasks we want to wait for are either already finished or currently running.
         // Therefore, we wait for all of the tasks we stored before to finish.
@@ -282,13 +357,14 @@ public actor TaskQueue<TaskID: Hashable> {
     }
     
     /// Cancels all tasks that are currently queued or running and wait for them to complete.
-    /// - Note: Since cancelling is cooperative, not all running tasks might be canceled immediately.  The function does wait for all tasks to complete their cancellation.
-    public func cancelAllAndWait() async {
+    /// - Throws: A CancellationError if the task is canceled.
+    /// - Note: Since cancelling is cooperative, not all running tasks might be canceled immediately. The function waits for all tasks to complete their cancellation.
+    public func cancelAllAndWait() async throws {
         self.cancelQueued()
         for task in self.runningTasks.values {
             task.cancel()
         }
-        await self.waitForAll()
+        try await self.waitForAll()
     }
 }
 
