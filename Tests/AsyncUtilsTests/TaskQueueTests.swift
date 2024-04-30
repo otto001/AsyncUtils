@@ -1,8 +1,17 @@
 //
 //  TaskQueueTests.swift
-//  
+//  AsyncUtils
 //
-//  Created by Matteo Ludwig on 26.04.24.
+//  Created by Matteo Ludwig on 24.04.24.
+//  Licensed under the MIT-License included in the project.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 //
 
 import XCTest
@@ -22,28 +31,6 @@ final class TaskQueueTests: XCTestCase {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
-    actor TestingStorage {
-        var starts: [Int: Date] = [:]
-        var ends: [Int: Date] = [:]
-        
-        var counter: Int = 0
-        
-        var data: ([Int: Date], [Int: Date], Int) {
-            (self.starts, self.ends, self.counter)
-        }
-        
-        func incrementCounter() {
-            self.counter += 1
-        }
-        
-        func started(_ id: Int) {
-            self.starts[id] = Date()
-        }
-        
-        func ended(_ id: Int) {
-            self.ends[id] = Date()
-        }
-    }
     
     func testAdd() async throws {
         self.queue = .init(maxConcurrentTasks: 1)
@@ -315,7 +302,7 @@ final class TaskQueueTests: XCTestCase {
      
         let (starts, ends, _) = await self.store.data
         
-        for i in 0...6 {
+        for i in 0...7 {
             XCTAssertLessThanOrEqual(starts[i]!, ends[i]!)
         }
         
