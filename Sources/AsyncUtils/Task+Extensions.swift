@@ -31,6 +31,7 @@ public extension Task where Failure == Error {
     /// - Parameters: delayInterval: The time interval to wait before starting the operation.
     /// - Parameters: priority: The priority of the task.
     /// - Parameters: operation: The operation to execute after the delay.
+    /// - Returns: The task.
     @discardableResult
     static func delayed(
         by delayInterval: TimeInterval,
@@ -40,6 +41,30 @@ public extension Task where Failure == Error {
         Task(priority: priority) {
             try await Task<Never, Never>.sleep(for: delayInterval)
             return try await operation()
+        }
+    }
+    
+    /// Creates a new task that will start executing the given operation immediately and will be cancelled after the given timeout.
+    /// - Parameters: timeout: The time interval after which the task will be cancelled.
+    /// - Parameters: priority: The priority of the task.
+    /// - Parameters: operation: The operation to execute.
+    /// - Returns: The task.
+    /// - Note: The task will be cancelled after the given timeout. Since task cancellation is cooperative, the operation may ignore the cancellation and continue to run. Therefore, it is recommended to check the task's `isCancelled` property and return early if the task is cancelled, as the timeout is meaningless otherwise.
+    @discardableResult
+    static func withTimeout(
+        cancelAfter timeout: TimeInterval,
+        priority: TaskPriority? = nil,
+        operation: @escaping @Sendable () async throws -> Success
+    ) -> Task {
+        Task(priority: priority) {
+            let task = Task {
+                return try await operation()
+            }
+            Task<Void, Error>.delayed(by: timeout) {
+                task.cancel()
+            }
+            
+            return try await task.value
         }
     }
 }
