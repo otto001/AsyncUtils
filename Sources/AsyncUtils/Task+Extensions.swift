@@ -55,17 +55,15 @@ public extension Task where Failure == Error {
         cancelAfter timeout: TimeInterval,
         priority: TaskPriority? = nil,
         operation: @escaping @Sendable () async throws -> Success
-    ) -> Task {
-        Task(priority: priority) {
-            let task = Task {
-                return try await operation()
-            }
-            Task<Void, Error>.delayed(by: timeout) {
-                task.cancel()
-            }
-            
-            return try await task.value
+    ) async throws -> Success {
+        let task = Task(priority: priority) {
+            return try await operation()
         }
+        Task<Void, Error>.delayed(by: timeout, priority: priority) {
+            task.cancel()
+        }
+        
+        return try await task.value
     }
 }
 

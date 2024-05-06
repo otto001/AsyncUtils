@@ -34,13 +34,11 @@ final class TaskExtensionsTests: XCTestCase {
     }
     
     func testTaskWithTimeout() async throws {
-        let start = Date()
-        let task = Task.withTimeout(cancelAfter: 0.1) {
-            try await Task.sleep(for: 0.06)
+        try await Task.withTimeout(cancelAfter: 0.1) {
+            try await Task.sleep(for: 0.08)
             XCTAssertFalse(Task.isCancelled)
-            try? await Task.sleep(for: 0.06)
+            try? await Task.sleep(for: 0.03)
             XCTAssertTrue(Task.isCancelled)
         }
-        try await task.value
     }
 }
