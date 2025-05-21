@@ -8,9 +8,9 @@
 import Foundation
 import DequeModule
 
-actor RateLimiter {
-    var maxTokens: Int
-    var averageRate: Double
+public actor RateLimiter {
+    public var maxTokens: Int
+    public var averageRate: Double
     
     private var remainingTokens: Int
     private var lastTokenRegenerate: Date
@@ -18,7 +18,7 @@ actor RateLimiter {
     
     private var lastSendTime: Date = .distantPast
     
-    var currentTokens: Int {
+    public var currentTokens: Int {
         regenerateTokens()
         return remainingTokens
     }
@@ -26,12 +26,12 @@ actor RateLimiter {
     private(set) var blocks: Deque<CheckedContinuation<Void, Error>> = []
     private(set) var regenerationTask: Task<Void, Never>? = nil
     
-    enum Mode {
+    public enum Mode {
         case leakyBucket(averageRate: Double)
         case tokenBucket(maxTokens: Int, averageRate: Double)
     }
     
-    init(_ mode: Mode) {
+    public init(_ mode: Mode) {
         switch mode {
         case .leakyBucket(averageRate: let averageRate):
             self.maxTokens = 1
@@ -97,7 +97,7 @@ actor RateLimiter {
         }
     }
     
-    func consumeToken() -> Bool {
+    public func consumeToken() -> Bool {
         regenerateTokens()
         guard remainingTokens > 0 else {
             return false
@@ -107,7 +107,7 @@ actor RateLimiter {
         return true
     }
     
-    func tryConsumeToken() throws {
+    public func tryConsumeToken() throws {
         regenerateTokens()
         guard remainingTokens > 0 else {
             throw RateLimiterError.exceededRateLimit
@@ -115,7 +115,7 @@ actor RateLimiter {
         remainingTokens -= 1
     }
     
-    func blockUntilNextTokenAvailable() async throws {
+    public func blockUntilNextTokenAvailable() async throws {
         guard !consumeToken() else {
             return
         }
@@ -128,6 +128,6 @@ actor RateLimiter {
 }
 
 
-enum RateLimiterError: Error {
+public enum RateLimiterError: Error, Sendable {
     case exceededRateLimit
 }
