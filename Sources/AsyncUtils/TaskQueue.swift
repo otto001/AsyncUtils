@@ -33,7 +33,7 @@ public actor TaskQueue<TaskID: Hashable> {
     }
   
     /// A task that can be added to the queue. The task can be provided with an ID to prevent duplicate tasks from being added to the queue.
-    public class QueueableTask: Identifiable, Hashable, Equatable {
+    public final class QueueableTask: Identifiable, Hashable, Equatable {
         /// The ID of the task. Used to prevent duplicate tasks from being added to the queue.
         public let taskID: TaskID?
         /// The closure that contains the work that the task should perform.
@@ -184,14 +184,19 @@ public actor TaskQueue<TaskID: Hashable> {
     
     /// Adds a task to the queue. If the task has an ID, the task is only added if no task with the same ID is already in the queue.
     /// - Parameters: queueableTask: The task that is added to the queue.
-    public func addOrGet(_ queueableTask: QueueableTask) -> QueueableTask {
+    /// - Parameters: prepend: If true, the task is added to the front of the queue. If false, the task is added to the end of the queue.
+    private func addOrGet(_ queueableTask: QueueableTask, prepend: Bool) -> QueueableTask {
         if let taskID = queueableTask.taskID {
             if let otherQueueableTask = self.taskIdMap[taskID] {
                 return otherQueueableTask
             }
             self.taskIdMap[taskID] = queueableTask
         }
-        self.queue.append(queueableTask)
+        if prepend {
+            self.queue.prepend(queueableTask)
+        } else {
+            self.queue.append(queueableTask)
+        }
         self.startNextTasks()
         return queueableTask
     }
@@ -199,7 +204,7 @@ public actor TaskQueue<TaskID: Hashable> {
     /// Adds a task to the queue. If the task has an ID, the task is only added if no task with the same ID is already in the queue.
     /// - Parameters: queueableTask: The task that is added to the queue.
     public func add(_ queueableTask: QueueableTask) {
-        _ = self.addOrGet(queueableTask)
+        _ = self.addOrGet(queueableTask, prepend: false)
     }
     
     /// Adds a task to the queue. If the task has an ID, the task is only added if no task with the same ID is already in the queue.
@@ -238,7 +243,7 @@ public actor TaskQueue<TaskID: Hashable> {
     /// - Note: `addAndWait` can only be used in conjuction with an id for tasks that do no return a value or throw an error. Tasks that return a value or throw an error can be used with the other `addAndWait` functions, however, no ID can be provided for these tasks.
     /// - Note: The function is cancellable. If all tasks waiting for the queued task with the provided ID are canceled, the queued task is canceled as well.
     public func addAndWait(with id: TaskID, _ closure: @Sendable @escaping () async -> Void) async throws {
-        let queueableTask = self.addOrGet(QueueableTask(taskID: id, closure: closure))
+        let queueableTask = self.addOrGet(QueueableTask(taskID: id, closure: closure), prepend: false)
         let wrappedContinuation = WrappedContinuation()
         queueableTask.continuations.append(wrappedContinuation)
         
@@ -312,15 +317,28 @@ public actor TaskQueue<TaskID: Hashable> {
         }
     }
     
-    /// Waits for all tasks with the provided IDs to finish if they are currently running. If a task is not running, the function will not wait for it to finish.
-    /// - Parameters: taskIDs: The IDs of the tasks that should be waited for.
-    private func waitForTasksIfRunning(taskIDs: [QueueableTask.ID]) async {
-        for taskId in taskIDs {
-            if let task = self.runningTasks[taskId] {
-                await task.value
+    /// Waits until a task which is currently running is finished. If no task is running, the function returns (almost) immediately.
+    /// - Note: This function works by prepending an empty task to the queue and waiting for it to finish.
+    private func waitForOneRunningTask() async throws {
+        let queueableTask = QueueableTask(taskID: nil) {}
+        
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                queueableTask.continationCancellation = {
+                    continuation.resume(throwing: CancellationError())
+                }
+                queueableTask.closure = {
+                    continuation.resume()
+                }
+                _ = self.addOrGet(queueableTask, prepend: true)
+            }
+        } onCancel: {
+            Task {
+                await self.cancel(for: queueableTask)
             }
         }
     }
+    
     
     /// Waits for all tasks that are currently queued or running to finish.
     /// - Throws: A CancellationError if the task is canceled.
@@ -332,9 +350,10 @@ public actor TaskQueue<TaskID: Hashable> {
         try await self.addAndWait {}
         
         
-        // If the following line is executed, all tasks we want to wait for are either already finished or currently running.
-        // Therefore, we wait for all of the tasks we stored before to finish.
-        await self.waitForTasksIfRunning(taskIDs: tasksAhead)
+        while !tasksAhead.allSatisfy({self.runningTasks[$0] == nil}) {
+            // While there still is atleast one task ahead that is running, wait for one running task to finish and then check again
+            try await self.waitForOneRunningTask()
+        }
     }
     
     /// Cancels all tasks that are currently queued but not running. Already running tasks are not canceled.

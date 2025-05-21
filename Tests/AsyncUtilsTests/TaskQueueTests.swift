@@ -196,6 +196,37 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertEqual(lastTaskCompletion.timeIntervalSinceReferenceDate, ts.timeIntervalSinceReferenceDate, accuracy: 0.001)
     }
     
+    func testWaitForAllCancellation() async throws {
+        self.queue = .init(maxConcurrentTasks: 2)
+        await self.queue.add {
+            try? await Task.sleep(for: 0.1)
+        }
+        await self.queue.add {
+            try? await Task.sleep(for: 1.0)
+        }
+        
+        
+        let start1 = Date()
+        // Try to cancel waitForAll while the queue has no free running slots (2 tasks running)
+        try await Task.withTimeout(cancelAfter: 0.05) {
+            try? await self.queue.waitForAll()
+        }
+        let delta1 = Date().timeIntervalSince(start1)
+        XCTAssertEqual(delta1, 0.05, accuracy: 0.01)
+        
+        try? await Task.sleep(for: 0.06)
+        
+        let start2 = Date()
+        // Try to cancel waitForAll while the queue has free running slots (1 tasks running)
+        try await Task.withTimeout(cancelAfter: 0.1) {
+            try? await self.queue.waitForAll()
+        }
+        let delta2 = Date().timeIntervalSince(start2)
+        XCTAssertEqual(delta2, 0.1, accuracy: 0.1)
+
+        try await queue.cancelAllAndWait()
+    }
+    
     func testCancelQueued() async throws {
         for i in 0..<500 {
             await self.queue.add {
