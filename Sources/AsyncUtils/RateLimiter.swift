@@ -23,8 +23,16 @@ public actor RateLimiter {
         return remainingTokens
     }
     
-    private(set) var blocks: Deque<CheckedContinuation<Void, Error>> = []
-    private(set) var regenerationTask: Task<Void, Never>? = nil
+    private final class BlockedWaiter: @unchecked Sendable, Identifiable {
+        var continuation: CheckedContinuation<Void, Error>?
+        
+        init(continuation: CheckedContinuation<Void, Error>? = nil) {
+            self.continuation = continuation
+        }
+    }
+    
+    private var blocks: Deque<BlockedWaiter> = []
+    private var regenerationTask: Task<Void, Never>? = nil
     
     public enum Mode {
         case leakyBucket(averageRate: Double)
@@ -55,7 +63,7 @@ public actor RateLimiter {
         if additionalTokensToRegenerate > 0  {
             
             while additionalTokensToRegenerate > 0, let nextBlocking = blocks.popFirst() {
-                nextBlocking.resume()
+                nextBlocking.continuation?.resume()
                 additionalTokensToRegenerate -= 1
             }
             
@@ -115,14 +123,33 @@ public actor RateLimiter {
         remainingTokens -= 1
     }
     
+    private func cancelBlockedWaiter(_ blockedWaiter: BlockedWaiter) {
+        if let index = blocks.firstIndex(where: {$0 === blockedWaiter}) {
+            blocks.remove(at: index)
+            blockedWaiter.continuation?.resume(throwing: CancellationError())
+        }
+    }
+    
     public func blockUntilNextTokenAvailable() async throws {
         guard !consumeToken() else {
             return
         }
         
-        return try await withCheckedThrowingContinuation { continuation in
-            blocks.append(continuation)
-            regenerateTokens()
+        let blockedWaiter = BlockedWaiter()
+        
+        return try await withTaskCancellationHandler {
+            return try await withCheckedThrowingContinuation { continuation in
+                #if DEBUG
+                self.assertIsolated()
+                #endif
+                blockedWaiter.continuation = continuation
+                blocks.append(blockedWaiter)
+                regenerateTokens()
+            }
+        } onCancel: {
+            Task {
+                await self.cancelBlockedWaiter(blockedWaiter)
+            }
         }
     }
 }

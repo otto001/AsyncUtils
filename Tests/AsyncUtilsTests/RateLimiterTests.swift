@@ -54,5 +54,28 @@ final class RateLimiterTests: XCTestCase {
                            0.01, accuracy: 0.003)
         }
     }
+    
+    
+    func testLeakyBucketBlockingCancellation() async throws {
+        let rateLimiter = RateLimiter(.leakyBucket(averageRate: 1))
+        let storage = TestingStorage()
+        
+        try await rateLimiter.tryConsumeToken()
+        
+        let waitTask = Task {
+            do {
+                try await rateLimiter.blockUntilNextTokenAvailable()
+            } catch is CancellationError {
+                await storage.incrementCounter()
+            }
+        }
+        
+        try await Task.sleep(for: 0.01)
+        waitTask.cancel()
+        try await Task.sleep(for: 0.01)
+        
+        let counter = await storage.counter
+        XCTAssertEqual(counter, 1)
+    }
 
 }
