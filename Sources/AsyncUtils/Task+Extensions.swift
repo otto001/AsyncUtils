@@ -21,7 +21,7 @@ public extension Task where Failure == Never, Success == Never {
     /// - Parameters: nanoseconds: The number of nanoseconds to wait.
     /// - Throws: For example, if the task is cancelled.
     static func sleep(for seconds: TimeInterval) async throws {
-        try await Task<Never, Never>.sleep(nanoseconds: UInt64(1_000_000_000 * seconds))
+        try await Task<Never, Never>.sleep(nanoseconds: UInt64(max(1_000_000_000 * seconds, 0)))
     }
 }
 
