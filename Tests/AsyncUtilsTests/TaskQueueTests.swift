@@ -19,12 +19,12 @@ import XCTest
 
 
 final class TaskQueueTests: XCTestCase {
-    var queue: TaskQueue<Int> = .init()
+    var queue: TaskQueue = .init()
     var store: TestingStorage = .init()
     
     override func setUpWithError() throws {
         self.store = TestingStorage()
-        self.queue = .init(maxConcurrentTasks: 3)
+        self.queue = .init(maxConcurrentSlots: 3)
     }
 
     override func tearDownWithError() throws {
@@ -33,7 +33,7 @@ final class TaskQueueTests: XCTestCase {
 
     
     func testAdd() async throws {
-        self.queue = .init(maxConcurrentTasks: 1)
+        self.queue = .init(maxConcurrentSlots: 1)
         for _ in 0..<500 {
             await self.queue.add {
                 try? await Task.sleep(for: .microseconds(1))
@@ -45,48 +45,8 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertGreaterThan(count1, 1)
         XCTAssertGreaterThan(queuedCount1, 1)
         XCTAssertEqual(runningCount1, 1)
-        
-        await self.queue.cancelAll()
     }
     
-    func testAddDuplicate() async throws {
-        
-        self.queue = .init(maxConcurrentTasks: 1)
-        
-        for _ in 0..<10 {
-            await self.queue.add(with: 0) {
-                try? await Task.sleep(for: .milliseconds(10))
-                await self.store.incrementCounter()
-            }
-        }
-        
-        let counts1 = await self.queue.counts
-        XCTAssertEqual(counts1, .init(queued: 0, running: 1))
-        
-        await self.queue.add(with: 1) {
-            try? await Task.sleep(for: .milliseconds(10))
-            await self.store.incrementCounter()
-        }
-        
-        let counts2 = await self.queue.counts
-        XCTAssertEqual(counts2, .init(queued: 1, running: 1))
-        
-        try! await self.queue.waitForAll()
-        
-        let counts3 = await self.queue.counts
-        XCTAssertEqual(counts3, .init(queued: 0, running: 0))
-        let counter3 = await self.store.counter
-        XCTAssertEqual(counter3, 2)
-        
-        for _ in 0..<10 {
-            await self.queue.add(with: 0) {
-                try? await Task.sleep(for: .milliseconds(10))
-            }
-        }
-        
-        let counts4 = await self.queue.counts
-        XCTAssertEqual(counts4, .init(queued: 0, running: 1))
-    }
     
     func testAddAndWait() async throws {
         for _ in 0..<10 {
@@ -116,70 +76,12 @@ final class TaskQueueTests: XCTestCase {
         await self.queue.cancelAll()
     }
     
-    func testAddAndWaitDuplicates() async throws {
-        for _ in 0..<10 {
-            await self.queue.add {
-                try? await Task.sleep(for: .milliseconds(1))
-            }
-        }
-        let counts1 = await self.queue.counts
-        XCTAssertGreaterThan(counts1.count, 1)
-        XCTAssertGreaterThan(counts1.queued, 1)
-        XCTAssertEqual(counts1.running, 3)
-        
-        var tasks: [Task<Void, Never>] = []
-        for i in 0..<9 {
-            let task = Task {
-                try! await self.queue.addAndWait(with: 0) {
-                    await self.store.started(i)
-                    try? await Task.sleep(for: .milliseconds(10))
-                    await self.store.incrementCounter()
-                    await self.store.ended(i)
-                }
-                
-                let counter = await self.store.counter
-                XCTAssertEqual(counter, 1)
-                
-                let counts = await self.queue.counts
-                XCTAssertEqual(counts, .init(queued: 0, running: 0))
-            }
-            tasks.append(task)
-        }
-        try! await self.queue.addAndWait(with: 0) {
-            await self.store.started(10)
-            try? await Task.sleep(for: .milliseconds(10))
-            await self.store.incrementCounter()
-            await self.store.ended(10)
-        }
-        
-        let ts = Date()
-        
-        let counts2 = await self.queue.counts
-        XCTAssertEqual(counts2, .init(queued: 0, running: 0))
-        
-        let counter2 = await self.store.counter
-        XCTAssertEqual(counter2, 1)
-        
-        let starts = await self.store.starts
-        let ends = await self.store.ends
-        
-        XCTAssertEqual(starts.count, 1)
-        XCTAssertEqual(ends.count, 1)
-        XCTAssertEqual(starts.first?.key, 0)
-        XCTAssertEqual(ends.first?.key, 0)
-        
-        XCTAssertLessThanOrEqual(ends[0]!, ts)
-    
-        for task in tasks {
-            _ = await task.result
-        }
-    }
     
     
     func testWaitForAll() async throws {
         for i in 0..<100 {
             await self.queue.add {
-                try! await Task.sleep(for: .milliseconds(1))
+                try! await Task.sleep(for: .milliseconds(10))
                 await self.store.ended(i)
             }
         }
@@ -197,13 +99,17 @@ final class TaskQueueTests: XCTestCase {
     }
     
     func testWaitForAllCancellation() async throws {
-        self.queue = .init(maxConcurrentTasks: 2)
-        await self.queue.add {
-            try? await Task.sleep(for: 0.1)
+        self.queue = .init(maxConcurrentSlots: 2)
+        for _ in 0..<3 {
+            await self.queue.add {
+                try? await Task.sleep(for: 0.1)
+            }
         }
         await self.queue.add {
             try? await Task.sleep(for: 1.0)
         }
+        
+        
         
         
         let start1 = Date()
@@ -217,14 +123,60 @@ final class TaskQueueTests: XCTestCase {
         try? await Task.sleep(for: 0.06)
         
         let start2 = Date()
+        // Try to cancel waitForAll while the queue has no free running slots (2 tasks running)
+        try await Task.withTimeout(cancelAfter: 0.05) {
+            try? await self.queue.waitForAll()
+        }
+        let delta2 = Date().timeIntervalSince(start2)
+        XCTAssertEqual(delta2, 0.05, accuracy: 0.01)
+        
+        let start3 = Date()
         // Try to cancel waitForAll while the queue has free running slots (1 tasks running)
         try await Task.withTimeout(cancelAfter: 0.1) {
             try? await self.queue.waitForAll()
         }
-        let delta2 = Date().timeIntervalSince(start2)
-        XCTAssertEqual(delta2, 0.1, accuracy: 0.1)
+        let delta3 = Date().timeIntervalSince(start3)
+        XCTAssertEqual(delta3, 0.1, accuracy: 0.1)
 
         try await queue.cancelAllAndWait()
+    }
+    
+    func testAddAndWaitCancelWhileRunningRaceCondition() async throws {
+        self.queue = .init(maxConcurrentSlots: 2)
+        await self.queue.add {
+            try? await Task.sleep(for: 0.1)
+        }
+        
+        let spamTask = Task {
+            while true {
+                try await queue.addAndWait {
+                    try? await Task.sleep(nanoseconds: 1)
+                }
+            }
+        }
+        
+        try await Task.sleep(for: 0.01)
+        spamTask.cancel()
+        try await Task.sleep(for: 0.1)
+    }
+    
+    func testAddAndWaitThrowsCancelWhileRunningRaceCondition() async throws {
+        self.queue = .init(maxConcurrentSlots: 2)
+        await self.queue.add {
+            try? await Task.sleep(for: 0.1)
+        }
+        
+        let spamTask = Task {
+            while true {
+                try await queue.addAndWait {
+                    try await Task.sleep(nanoseconds: 1)
+                }
+            }
+        }
+        
+        try await Task.sleep(for: 0.01)
+        spamTask.cancel()
+        try await Task.sleep(for: 0.1)
     }
     
     func testCancelQueued() async throws {
@@ -254,13 +206,14 @@ final class TaskQueueTests: XCTestCase {
     
     func testCancelAll() async throws {
         let cancellationStore = TestingStorage()
-        self.queue = .init(maxConcurrentTasks: 13)
+        self.queue = .init(maxConcurrentSlots: 20)
         for i in 0..<500 {
             await self.queue.add {
                 await self.store.started(i)
                 await self.store.incrementCounter()
                 do {
-                    try await Task.sleep(for: .milliseconds(50))
+                    try await Task.sleep(for: .milliseconds(1000))
+                    try Task.checkCancellation()
                     await self.store.ended(i)
                 } catch is CancellationError {
                     await cancellationStore.incrementCounter()
@@ -297,7 +250,7 @@ final class TaskQueueTests: XCTestCase {
     }
     
     func testOrderOfOperationsSerial() async throws {
-        self.queue = .init(maxConcurrentTasks: 1)
+        self.queue = .init(maxConcurrentSlots: 1)
         for i in 0..<500 {
             await self.queue.add {
                 await self.store.started(i)
@@ -350,19 +303,20 @@ final class TaskQueueTests: XCTestCase {
     }
     
     func testAddAndWaitCancellationWhileRunning() async throws {
-        
-        
         let task = Task {
             await self.store.started(0)
             try await self.queue.addAndWait {
                 if !Task.isCancelled {
                     await self.store.incrementCounter()
                 }
+                
                 try? await Task.sleep(for: 0.2)
+                
                 if !Task.isCancelled {
                     await self.store.incrementCounter()
                 }
             }
+            
   
             await self.store.ended(0)
             return 1
@@ -378,8 +332,8 @@ final class TaskQueueTests: XCTestCase {
         
         XCTAssertEqual(counter, 1)
         XCTAssertLessThan(starts[0]!, cancellationTime)
-        XCTAssertLessThan(ends[0]!.timeIntervalSinceReferenceDate - starts[0]!.timeIntervalSinceReferenceDate, 0.11)
-        XCTAssertEqual(try! result.get(), 1)
+        XCTAssertEqual(ends.count, 0)
+        XCTAssertTrue(result.isCancellationResult)
     }
     
     func testAddAndWaitCancellationWhileQueued() async throws {
@@ -391,6 +345,7 @@ final class TaskQueueTests: XCTestCase {
         
         let task = Task {
             await self.store.started(0)
+            
             try await self.queue.addAndWait {
                 if !Task.isCancelled {
                     await self.store.incrementCounter()
@@ -400,6 +355,37 @@ final class TaskQueueTests: XCTestCase {
                 if !Task.isCancelled {
                     await self.store.incrementCounter()
                 }
+            }
+  
+            await self.store.ended(0)
+        }
+
+        try! await Task.sleep(for: 0.1)
+        task.cancel()
+        let cancellationTime = Date()
+        
+        let result = await task.result
+        
+        let (starts, ends, counter) = await self.store.data
+        
+        XCTAssertEqual(counter, 0)
+        XCTAssertLessThan(starts[0]!, cancellationTime)
+        XCTAssertEqual(ends.count, 0)
+        XCTAssertTrue(result.isCancellationResult)
+    }
+    
+    func testAddAndWaitCancellationBeforeQueued() async throws {
+        for _ in 0..<3 {
+            await self.queue.add {
+                try! await Task.sleep(for: 0.2)
+            }
+        }
+        
+        let task = Task {
+            await self.store.started(0)
+            
+            try await self.queue.addAndWait {
+                await self.store.incrementCounter()
             }
   
             await self.store.ended(0)
@@ -480,65 +466,40 @@ final class TaskQueueTests: XCTestCase {
         XCTAssertTrue(result.isCancellationResult)
     }
     
-    func testAddAndWaitWithIdCancellationWhileRunning() async throws {
-        let task = Task {
-            await self.store.started(0)
-            try await self.queue.addAndWait(with: 0) {
-                if !Task.isCancelled {
-                    await self.store.incrementCounter()
-                }
-                try? await Task.sleep(for: 0.2)
-                if !Task.isCancelled {
-                    await self.store.incrementCounter()
-                }
-            }
-            await self.store.ended(0)
-        }
 
-        try! await Task.sleep(for: 0.1)
-        task.cancel()
-        let cancellationTime = Date()
+    func testAddAndWaitThrowsCancellationBeforeQueued() async throws {
         
-        try? await task.value
-        
-        let (starts, ends, counter) = await self.store.data
-        
-        XCTAssertEqual(counter, 1)
-        XCTAssertLessThan(starts[0]!, cancellationTime)
-        XCTAssertEqual(ends.count, 0)
-    }
-    
-    func testAddAndWaitWithIdCancellationWhileQueued() async throws {
         for _ in 0..<3 {
             await self.queue.add {
                 try! await Task.sleep(for: 0.2)
             }
         }
+        
         let task = Task {
             await self.store.started(0)
-            try await self.queue.addAndWait(with: 0) {
-                if !Task.isCancelled {
-                    await self.store.incrementCounter()
-                }
-                try? await Task.sleep(for: 0.2)
-                if !Task.isCancelled {
-                    await self.store.incrementCounter()
-                }
+            if !Task.isCancelled {
+                await Task.yield()
+            }
+            
+            try await self.queue.addAndWait {
+                await self.store.incrementCounter()
             }
             await self.store.ended(0)
+
         }
 
         try! await Task.sleep(for: 0.1)
         task.cancel()
         let cancellationTime = Date()
         
-        try? await task.value
+        let result = await task.result
         
         let (starts, ends, counter) = await self.store.data
         
         XCTAssertEqual(counter, 0)
         XCTAssertLessThan(starts[0]!, cancellationTime)
         XCTAssertEqual(ends.count, 0)
+        XCTAssertTrue(result.isCancellationResult)
     }
 }
 

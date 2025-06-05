@@ -77,9 +77,6 @@ final class AsyncOperationTests: XCTestCase {
      
         let (starts, ends, _) = await self.store.data
         
-        print(starts.keys.map {$0}.sorted())
-        print(ends.keys.map {$0}.sorted())
-        
         XCTAssertEqual(starts.count, 4)
         XCTAssertEqual(ends.count, 1)
         

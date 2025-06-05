@@ -40,3 +40,12 @@ actor TestingStorage {
         self.ends[id] = Date()
     }
 }
+
+extension XCTestCase {
+    func expectation(_ description: String, inverted: Bool = false) -> XCTestExpectation {
+        let ex = expectation(description: "taskStarted")
+        ex.isInverted = inverted
+        return ex
+    }
+}
+

@@ -18,7 +18,7 @@ import Foundation
 
 
 /// An `Operation` subclass that performs an asynchronous operation using swift concurrency.
-public class AsyncOperation: Operation {
+public class AsyncOperation: Operation, @unchecked Sendable {
     private static let lockQueue = DispatchQueue(label: "de.mludwig.AsyncUtils.AsyncOperation.LockQueue")
 
     // MARK: - Operation Overrides
@@ -121,6 +121,9 @@ public class AsyncOperation: Operation {
 }
 
 public extension OperationQueue {
+    /// Adds an `AsyncOperation` to the operation queue.
+    /// - Parameter operation: The asynchronous operation to be executed.
+    /// - Returns: The `AsyncOperation` instance that was added to the queue.
     @discardableResult
     func addOperation(_ operation: @Sendable @escaping () async -> Void) -> AsyncOperation {
         let asyncOperation = AsyncOperation(operation: operation)

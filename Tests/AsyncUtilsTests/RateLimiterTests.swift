@@ -3,6 +3,15 @@
 //  AsyncUtils
 //
 //  Created by Matteo Ludwig on 21.05.25.
+//  Licensed under the MIT-License included in the project.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 //
 
 import XCTest
@@ -12,23 +21,23 @@ final class RateLimiterTests: XCTestCase {
 
 
     func testLeakyBucketRegenerate() async throws {
-        let rateLimiter = RateLimiter(.leakyBucket(averageRate: 10))
+        let rateLimiter = RateLimiter(.leakyBucket(tokenRate: 10))
         let consumeFirst = await rateLimiter.consumeToken()
         let firstConsumed = Date()
         XCTAssertTrue(consumeFirst)
         
         while Date().timeIntervalSince(firstConsumed) < 0.1 {
-            let currentTokens = await rateLimiter.currentTokens
-            XCTAssertEqual(currentTokens, 0)
+            let canConsume = await rateLimiter.consumeToken()
+            XCTAssertFalse(canConsume)
             try await Task.sleep(for: .milliseconds(10))
             
         }
-        let currentTokens = await rateLimiter.currentTokens
-        XCTAssertEqual(currentTokens, 1)
+        let canConsume = await rateLimiter.consumeToken()
+        XCTAssertTrue(canConsume)
     }
 
     func testLeakyBucketBlocking() async throws {
-        let rateLimiter = RateLimiter(.leakyBucket(averageRate: 100))
+        let rateLimiter = RateLimiter(.leakyBucket(tokenRate: 100))
         let storage = TestingStorage()
         
         let count = 300
@@ -57,7 +66,7 @@ final class RateLimiterTests: XCTestCase {
     
     
     func testLeakyBucketBlockingCancellation() async throws {
-        let rateLimiter = RateLimiter(.leakyBucket(averageRate: 1))
+        let rateLimiter = RateLimiter(.leakyBucket(tokenRate: 1))
         let storage = TestingStorage()
         
         try await rateLimiter.tryConsumeToken()
