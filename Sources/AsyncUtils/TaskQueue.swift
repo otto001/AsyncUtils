@@ -265,6 +265,19 @@ public actor TaskQueue {
     }
     
     /// Adds a task to the queue.
+    /// - Parameters: queueableTask: The task that is added to the queue.
+    public func add(_ queueableTask: QueueableTask)  {
+        let closure = queueableTask.closure
+        var queueableTask = queueableTask
+        let ticket = Ticket()
+        queueableTask.closure = { @Sendable in
+            await closure()
+            await self.completedTask(ticket)
+        }
+        add(queueableTask, with: ticket)
+    }
+    
+    /// Adds a task to the queue.
     /// - Parameters: slots: The number of slots that the task requires. By default, a task requires 1 slot.
     /// - Parameters: closure: The closure that contains the work that the task should perform.
     public func add(slots: Int = 1, _ closure: @Sendable @escaping () async -> Void)  {
